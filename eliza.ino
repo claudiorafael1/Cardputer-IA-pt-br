@@ -2,26 +2,28 @@
 #include <SD.h>
 #include <SPI.h>
 #include <string.h>
+#include <stdio.h>
+
+// Fixed-size buffers avoid repeated heap allocation from Arduino String.
+static constexpr size_t INPUT_CAP = 128;
+static constexpr size_t LINE_CAP = 256;
+static constexpr size_t KEY_CAP = 80;
+static constexpr size_t REPLY_CAP = 192;
+static constexpr size_t PATH_CAP = 64;
 
 M5Canvas canvas(&M5Cardputer.Display);
-String inputBuffer = "> ";
+static char inputBuffer[INPUT_CAP] = "> ";
+static char brainFile[PATH_CAP] = "/regras.txt";
+static char lastTopic[KEY_CAP] = "";
+static char previousUserText[INPUT_CAP] = "";
+static bool hasSD = false;
 
-// Pinos do Cartao SD no M5Cardputer
 #define SD_SPI_SCK 40
 #define SD_SPI_MISO 39
 #define SD_SPI_MOSI 14
 #define SD_SPI_CS 12
 SPIClass SPI2(HSPI);
 
-bool hasSD = false;
-String lastTopic = "nada";
-String brainFile = "/regras.txt";
-String previousUserText = "";
-String recentUserText[3];
-
-// ---------------------------------------------------------
-// PALETA DE CORES
-// ---------------------------------------------------------
 #define COLOR_BG      BLACK
 #define COLOR_HEADER  M5Cardputer.Display.color565(20, 25, 30)
 #define COLOR_AI      M5Cardputer.Display.color565(0, 255, 180)
@@ -29,8 +31,8 @@ String recentUserText[3];
 #define COLOR_SYS     M5Cardputer.Display.color565(255, 120, 0)
 #define COLOR_ERROR   RED
 
-struct MinimalRule { const char* keyword; const char* response; };
-const MinimalRule internalRules[] = {
+struct InternalRule { const char *key; const char *reply; };
+static const InternalRule internalRules[] = {
   {"eu sou", "O que faz voce dizer que e *?"},
   {"me sinto", "O que esta fazendo voce se sentir *?"},
   {"estou", "Como e para voce estar *?"},
@@ -45,19 +47,100 @@ const MinimalRule internalRules[] = {
   {"sonho", "O que esse sonho significa para voce?"},
   {"amor", "O que o amor representa para voce?"},
   {"porque", "O que voce acha que pode ser a razao?"},
-  {"nao sei", "Tudo bem nao saber ainda. O que voce consegue perceber sobre isso?"}
+  {"nao sei", "Tudo bem nao saber. O que voce consegue perceber sobre isso?"}
 };
-const size_t INTERNAL_RULE_COUNT = sizeof(internalRules) / sizeof(internalRules[0]);
+static constexpr size_t INTERNAL_RULE_COUNT = sizeof(internalRules) / sizeof(internalRules[0]);
 
-// ---------------------------------------------------------
-// INTERFACE
-// ---------------------------------------------------------
-void drawHeader() {
+static void copyText(char *dst, size_t cap, const char *src) {
+  if (!cap) return;
+  if (!src) src = "";
+  snprintf(dst, cap, "%s", src);
+}
+
+static bool isSpace(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
+
+// Decode common Portuguese UTF-8 accents while copying to a bounded ASCII buffer.
+// This avoids String.replace() chains and keeps phrase matching deterministic.
+static char accentAscii(unsigned char c) {
+  switch (c) {
+    case 0x80: case 0x81: case 0x82: case 0x83: case 0x84: case 0xA0: case 0xA1:
+    case 0xA2: case 0xA3: case 0xA4: case 0xA5: return 'a';
+    case 0x88: case 0x89: case 0x8A: case 0x8B: case 0xA8: case 0xA9: case 0xAA:
+    case 0xAB: return 'e';
+    case 0x8C: case 0x8D: case 0x8E: case 0x8F: case 0xAC: case 0xAD: case 0xAE:
+    case 0xAF: return 'i';
+    case 0x92: case 0x93: case 0x94: case 0x95: case 0x96: case 0x98: case 0x99:
+    case 0x9A: case 0x9B: case 0xB2: case 0xB3: case 0xB4: case 0xB5: case 0xB6:
+    case 0xB8: case 0xB9: case 0xBA: case 0xBB: return 'o';
+    case 0x99: case 0x9A: case 0x9B: case 0x9C: case 0xB9: case 0xBA: case 0xBB:
+    case 0xBC: case 0xBD: case 0xBE: case 0xBF: return 'u';
+    case 0x87: case 0xA7: return 'c';
+    default: return ' ';
+  }
+}
+
+static void normalize(const char *src, char *dst, size_t cap) {
+  if (!cap) return;
+  size_t out = 0;
+  bool pendingSpace = false;
+  for (size_t i = 0; src && src[i] && out + 1 < cap; ++i) {
+    unsigned char c = (unsigned char)src[i];
+    char normalized;
+    if (c == 0xC3 && src[i + 1]) {
+      normalized = accentAscii((unsigned char)src[++i]);
+    } else if (c < 0x80) {
+      if (c >= 'A' && c <= 'Z') c = (unsigned char)(c + ('a' - 'A'));
+      if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '/') normalized = (char)c;
+      else normalized = ' ';
+    } else {
+      normalized = ' ';
+    }
+
+    if (isSpace(normalized)) {
+      pendingSpace = out > 0;
+    } else {
+      if (pendingSpace && out + 1 < cap) dst[out++] = ' ';
+      pendingSpace = false;
+      dst[out++] = normalized;
+    }
+  }
+  dst[out] = '\0';
+}
+
+static bool containsPhrase(const char *text, const char *phrase) {
+  if (!text || !phrase || !*phrase) return false;
+  const size_t n = strlen(phrase);
+  const char *p = text;
+  while ((p = strstr(p, phrase)) != nullptr) {
+    bool left = (p == text || p[-1] == ' ');
+    bool right = (p[n] == '\0' || p[n] == ' ');
+    if (left && right) return true;
+    ++p;
+  }
+  return false;
+}
+
+static bool readLine(File &file, char *dst, size_t cap) {
+  if (!file || !file.available() || cap < 2) return false;
+  size_t n = file.readBytesUntil('\n', dst, cap - 1);
+  dst[n] = '\0';
+  // Discard the tail of an overlong line rather than treating it as another rule.
+  if (n == cap - 1 && file.available()) {
+    int c;
+    while ((c = file.read()) >= 0 && c != '\n') yield();
+  }
+  while (n && (dst[n - 1] == '\r' || dst[n - 1] == ' ' || dst[n - 1] == '\t')) dst[--n] = '\0';
+  size_t start = 0;
+  while (dst[start] == ' ' || dst[start] == '\t') ++start;
+  if (start) memmove(dst, dst + start, strlen(dst + start) + 1);
+  return true;
+}
+
+static void drawHeader() {
   M5Cardputer.Display.fillRect(0, 0, M5Cardputer.Display.width(), 20, COLOR_HEADER);
   M5Cardputer.Display.drawLine(0, 20, M5Cardputer.Display.width(), 20, COLOR_AI);
   M5Cardputer.Display.setTextColor(COLOR_AI, COLOR_HEADER);
   M5Cardputer.Display.drawString("ELIZA NEURAL OS", 5, 2);
-
   if (hasSD) {
     M5Cardputer.Display.setTextColor(GREEN, COLOR_HEADER);
     M5Cardputer.Display.drawString("[SD OK]", M5Cardputer.Display.width() - 65, 2);
@@ -67,328 +150,228 @@ void drawHeader() {
   }
 }
 
-void drawInput() {
+static void drawInput() {
   M5Cardputer.Display.fillRect(0, M5Cardputer.Display.height() - 24,
                                M5Cardputer.Display.width(), 24, COLOR_BG);
   M5Cardputer.Display.setTextColor(WHITE, COLOR_BG);
-  M5Cardputer.Display.drawString(inputBuffer + "_", 4,
+  M5Cardputer.Display.drawString(String(inputBuffer) + "_", 4,
                                  M5Cardputer.Display.height() - 20);
 }
 
-// ---------------------------------------------------------
-// NORMALIZACAO: acentos, caixa e pontuacao
-// A normalizacao permite comparar palavras sem depender do teclado usado.
-// ---------------------------------------------------------
-String normalizeText(const String &text) {
-  String s = text;
-  s.toLowerCase();
+static void remember(const char *userText) { copyText(previousUserText, sizeof(previousUserText), userText); }
+static void clearRecentContext() { previousUserText[0] = '\0'; }
 
-  // UTF-8: converte acentos comuns em portugues para ASCII.
-  s.replace("á", "a"); s.replace("à", "a"); s.replace("â", "a"); s.replace("ã", "a"); s.replace("ä", "a");
-  s.replace("é", "e"); s.replace("è", "e"); s.replace("ê", "e"); s.replace("ë", "e");
-  s.replace("í", "i"); s.replace("ì", "i"); s.replace("î", "i"); s.replace("ï", "i");
-  s.replace("ó", "o"); s.replace("ò", "o"); s.replace("ô", "o"); s.replace("õ", "o"); s.replace("ö", "o");
-  s.replace("ú", "u"); s.replace("ù", "u"); s.replace("û", "u"); s.replace("ü", "u");
-  s.replace("ç", "c");
-
-  for (int i = 0; i < (int)s.length(); i++) {
-    char c = s[i];
-    if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == ' ')) {
-      s.setCharAt(i, ' ');
-    }
-  }
-  while (s.indexOf("  ") >= 0) s.replace("  ", " ");
-  s.trim();
-  return s;
-}
-
-// Busca frase inteira, evitando falsos positivos (ex.: "oi" dentro de "coisa").
-bool containsPhrase(const String &text, const String &phrase) {
-  if (phrase.length() == 0) return false;
-  String paddedText = " " + text + " ";
-  String paddedPhrase = " " + phrase + " ";
-  return paddedText.indexOf(paddedPhrase) >= 0;
-}
-
-// ---------------------------------------------------------
-// INVERSAO DE PERSPECTIVA PARA RESPOSTAS COM ASTERISCO
-// ---------------------------------------------------------
-String reflect(const String &text) {
-  String s = " " + normalizeText(text) + " ";
-  s.replace(" eu sou ", " voce e ");
-  s.replace(" eu estou ", " voce esta ");
-  s.replace(" eu tenho ", " voce tem ");
-  s.replace(" eu quero ", " voce quer ");
-  s.replace(" eu posso ", " voce pode ");
-  s.replace(" eu gosto ", " voce gosta ");
-  s.replace(" eu ", " voce ");
-  s.replace(" me ", " te ");
-  s.replace(" meu ", " seu ");
-  s.replace(" minha ", " sua ");
-  s.replace(" meus ", " seus ");
-  s.replace(" minhas ", " suas ");
-  s.replace(" comigo ", " com voce ");
-  s.replace(" sou ", " e ");
-  s.replace(" estou ", " esta ");
-  s.replace(" tenho ", " tem ");
-  s.trim();
-  return s;
-}
-
-void rememberContext(const String &userText) {
-  previousUserText = userText;
-  for (int i = 2; i > 0; --i) recentUserText[i] = recentUserText[i - 1];
-  recentUserText[0] = userText;
-}
-
-void clearRecentContext() {
-  previousUserText = "";
-  for (int i = 0; i < 3; ++i) recentUserText[i] = "";
-}
-
-// ---------------------------------------------------------
-// MEMORIA EM SD E BUSCA DE LEMBRANCAS
-// ---------------------------------------------------------
-void logPensamento(const String &userText, const String &aiText) {
-  rememberContext(userText);
+static void logConversation(const char *userText, const char *reply) {
+  remember(userText);
   if (!hasSD) return;
-
-  File logFile = SD.open("/pensamentos/log.txt", FILE_APPEND);
-  if (logFile) {
-    logFile.print(F("V: ")); logFile.println(userText);
-    logFile.print(F("E: ")); logFile.println(aiText);
-    logFile.close();
-  }
+  File f = SD.open("/pensamentos/log.txt", FILE_APPEND);
+  if (!f) return;
+  f.print(F("V: ")); f.println(userText);
+  f.print(F("E: ")); f.println(reply);
+  f.close();
 }
 
-String buscarPensamentos(const String &term) {
-  if (term.length() == 0) return String(F("ELIZA: Diga uma palavra ou assunto para eu procurar."));
-  if (!hasSD) return String(F("SISTEMA: Sem cartao SD, a memoria persistente esta indisponivel."));
+static void searchMemory(const char *term, char *reply, size_t replyCap) {
+  if (!*term) { copyText(reply, replyCap, "ELIZA: Diga um termo para procurar."); return; }
+  if (!hasSD) { copyText(reply, replyCap, "SISTEMA: Cartao SD indisponivel."); return; }
+  File f = SD.open("/pensamentos/log.txt", FILE_READ);
+  if (!f) { copyText(reply, replyCap, "ELIZA: Ainda nao tenho lembrancas salvas."); return; }
 
-  File logFile = SD.open("/pensamentos/log.txt", FILE_READ);
-  if (!logFile) return String(F("ELIZA: Ainda nao tenho lembrancas salvas."));
-
-  String normalizedTerm = normalizeText(term);
-  String latestMatch = "";
-  while (logFile.available()) {
+  char line[LINE_CAP], normalized[LINE_CAP], normalizedTerm[INPUT_CAP];
+  char latest[INPUT_CAP] = "";
+  normalize(term, normalizedTerm, sizeof(normalizedTerm));
+  while (readLine(f, line, sizeof(line))) {
     yield();
-    String line = logFile.readStringUntil('\n');
-    String normalizedLine = normalizeText(line);
-    if (containsPhrase(normalizedLine, normalizedTerm)) {
-      line.trim();
-      if (line.startsWith("V: ")) line.remove(0, 3);
-      latestMatch = line;
-    }
+    if (strncmp(line, "V: ", 3) != 0) continue;
+    normalize(line + 3, normalized, sizeof(normalized));
+    if (containsPhrase(normalized, normalizedTerm)) copyText(latest, sizeof(latest), line + 3);
   }
-  logFile.close();
-
-  if (latestMatch.length() > 0) {
-    return String(F("ELIZA: Encontrei uma lembranca: \"")) + latestMatch + "\"";
-  }
-  return String(F("ELIZA: Nao encontrei lembrancas sobre '")) + term + "'.";
+  f.close();
+  if (*latest) snprintf(reply, replyCap, "ELIZA: Encontrei uma lembranca: \"%.100s\"", latest);
+  else snprintf(reply, replyCap, "ELIZA: Nao encontrei lembrancas sobre '%.80s'.", term);
 }
 
-// ---------------------------------------------------------
-// RESPOSTAS POR INTENCAO: pequenas regras locais, sem modelo pesado
-// ---------------------------------------------------------
-String getIntentResponse(const String &text) {
-  if (text == "oi" || text == "ola" || text == "bom dia" ||
-      text == "boa tarde" || text == "boa noite" || text == "e ai") {
-    return String(F("Oi! O que voce gostaria de conversar hoje?"));
+static void reflectText(const char *src, char *dst, size_t cap) {
+  char normalized[INPUT_CAP];
+  normalize(src, normalized, sizeof(normalized));
+  size_t out = 0;
+  const char *p = normalized;
+  while (*p && out + 1 < cap) {
+    while (*p == ' ') ++p;
+    if (!*p) break;
+    const char *start = p;
+    while (*p && *p != ' ') ++p;
+    size_t len = (size_t)(p - start);
+    const char *replacement = nullptr;
+    if (len == 2 && strncmp(start, "eu", len) == 0) replacement = "voce";
+    else if (len == 2 && strncmp(start, "me", len) == 0) replacement = "te";
+    else if ((len == 3 && strncmp(start, "sou", len) == 0)) replacement = "e";
+    else if ((len == 5 && strncmp(start, "estou", len) == 0)) replacement = "esta";
+    else if ((len == 4 && strncmp(start, "meu", len) == 0)) replacement = "seu";
+    else if ((len == 5 && strncmp(start, "minha", len) == 0)) replacement = "sua";
+    else if ((len == 4 && strncmp(start, "meus", len) == 0)) replacement = "seus";
+    else if ((len == 6 && strncmp(start, "minhas", len) == 0)) replacement = "suas";
+    const char *word = replacement ? replacement : start;
+    size_t wordLen = replacement ? strlen(replacement) : len;
+    if (out && out + 1 < cap) dst[out++] = ' ';
+    if (wordLen > cap - out - 1) wordLen = cap - out - 1;
+    memcpy(dst + out, word, wordLen);
+    out += wordLen;
   }
-  if (containsPhrase(text, "quem e voce") || containsPhrase(text, "o que voce e")) {
-    return String(F("Sou a Eliza, uma assistente offline no Cardputer. Reconheco temas, sigo regras locais e posso consultar lembrancas salvas no cartao SD."));
-  }
-  if (containsPhrase(text, "o que voce pode fazer") || containsPhrase(text, "ajuda")) {
-    return String(F("Posso conversar por temas, usar regras do cartao SD e buscar lembrancas. Comandos: /ajuda, /tema NOME, /tema geral, /memoria TERMO e /limpar."));
-  }
-  if (containsPhrase(text, "como voce esta") || containsPhrase(text, "tudo bem")) {
-    return String(F("Estou funcionando e pronta para conversar. E voce, como esta se sentindo?"));
-  }
-  if (containsPhrase(text, "obrigado") || containsPhrase(text, "obrigada") || containsPhrase(text, "valeu")) {
-    return String(F("De nada! O que mais posso fazer por voce?"));
-  }
-  if (containsPhrase(text, "tchau") || containsPhrase(text, "ate mais") || containsPhrase(text, "adeus")) {
-    return String(F("Ate mais. Quando quiser continuar, estarei aqui."));
-  }
-  if (containsPhrase(text, "triste") || containsPhrase(text, "deprimido") || containsPhrase(text, "deprimida")) {
-    return String(F("Sinto muito que esteja passando por isso. Quer me contar o que aconteceu?"));
-  }
-  if (containsPhrase(text, "ansioso") || containsPhrase(text, "ansiosa") || containsPhrase(text, "preocupado") || containsPhrase(text, "preocupada")) {
-    return String(F("Parece que isso esta pesando para voce. Qual e a principal preocupacao agora?"));
-  }
-  if (containsPhrase(text, "feliz") || containsPhrase(text, "contente") || containsPhrase(text, "alegre")) {
-    return String(F("Que bom! O que aconteceu para voce se sentir assim?"));
-  }
-  if (containsPhrase(text, "meu nome e") || containsPhrase(text, "me chamo")) {
-    return String(F("Prazer em conhecer voce. Como prefere que eu te chame?"));
-  }
-  if (containsPhrase(text, "nao sei") || containsPhrase(text, "nao tenho certeza")) {
-    return String(F("Tudo bem ainda nao ter certeza. Que parte voce consegue esclarecer primeiro?"));
-  }
-  if (containsPhrase(text, "porque") || containsPhrase(text, "por que")) {
-    return String(F("O que voce imagina que pode estar por tras disso?"));
-  }
-  if (containsPhrase(text, "codigo") || containsPhrase(text, "programacao") || containsPhrase(text, "arduino") || containsPhrase(text, "esp32")) {
-    return String(F("Posso ajudar a pensar em logica e projetos para Arduino ou ESP32. Qual problema voce esta tentando resolver?"));
-  }
-  if (containsPhrase(text, "como funciona") || containsPhrase(text, "me explique")) {
-    return String(F("Posso tentar explicar. Qual parte ou conceito voce quer entender melhor?"));
-  }
-  return "";
+  dst[out] = '\0';
 }
 
-String chooseResponse(const String &responseList) {
-  String choices[5];
-  int count = 0;
-  int start = 0;
-  while (start <= (int)responseList.length() && count < 5) {
-    int separator = responseList.indexOf('|', start);
-    if (separator < 0) {
-      String item = responseList.substring(start);
-      item.trim();
-      if (item.length() > 0) choices[count++] = item;
-      break;
-    }
-    String item = responseList.substring(start, separator);
-    item.trim();
-    if (item.length() > 0) choices[count++] = item;
-    start = separator + 1;
+static void pickReply(const char *responses, char *dst, size_t cap) {
+  unsigned count = 0;
+  const char *p = responses;
+  while (true) {
+    ++count;
+    p = strchr(p, '|');
+    if (!p) break;
+    ++p;
   }
-  if (count == 0) return "";
-  return choices[random(0, count)];
+  unsigned selected = (unsigned)random(count);
+  p = responses;
+  while (selected-- && (p = strchr(p, '|')) != nullptr) ++p;
+  const char *end = strchr(p, '|');
+  size_t n = end ? (size_t)(end - p) : strlen(p);
+  while (n && (p[n - 1] == ' ' || p[n - 1] == '\r')) --n;
+  if (n >= cap) n = cap - 1;
+  memcpy(dst, p, n);
+  dst[n] = '\0';
 }
 
-// ---------------------------------------------------------
-// MOTOR DE CONVERSA
-// Prioriza a regra mais especifica em vez da primeira linha que coincidir.
-// Formato de regras.txt: palavra ou frase|resposta|resposta com * opcional
-// ---------------------------------------------------------
-String getElizaResponse(const String &input) {
-  String text = normalizeText(input);
-  if (text.length() == 0) return String(F("ELIZA: Escreva algo para iniciarmos a conversa."));
+static bool setIntent(const char *text, char *reply, size_t cap) {
+  if (!strcmp(text, "oi") || !strcmp(text, "ola") || !strcmp(text, "bom dia") ||
+      !strcmp(text, "boa tarde") || !strcmp(text, "boa noite") || !strcmp(text, "e ai"))
+    copyText(reply, cap, "ELIZA: Oi! O que voce gostaria de conversar hoje?");
+  else if (containsPhrase(text, "quem e voce") || containsPhrase(text, "o que voce e"))
+    copyText(reply, cap, "ELIZA: Sou a Eliza, assistente offline no Cardputer. Uso regras locais e memoria no cartao SD.");
+  else if (containsPhrase(text, "o que voce pode fazer") || !strcmp(text, "ajuda"))
+    copyText(reply, cap, "ELIZA: Comandos: /ajuda, /tema NOME, /tema geral, /memoria TERMO e /limpar.");
+  else if (containsPhrase(text, "como voce esta") || containsPhrase(text, "tudo bem"))
+    copyText(reply, cap, "ELIZA: Estou funcionando e pronta para conversar. E voce, como esta?");
+  else if (containsPhrase(text, "obrigado") || containsPhrase(text, "obrigada") || containsPhrase(text, "valeu"))
+    copyText(reply, cap, "ELIZA: De nada! O que mais posso fazer por voce?");
+  else if (containsPhrase(text, "tchau") || containsPhrase(text, "ate mais") || containsPhrase(text, "adeus"))
+    copyText(reply, cap, "ELIZA: Ate mais. Quando quiser continuar, estarei aqui.");
+  else if (containsPhrase(text, "triste") || containsPhrase(text, "deprimido") || containsPhrase(text, "deprimida"))
+    copyText(reply, cap, "ELIZA: Sinto muito. Quer me contar o que aconteceu?");
+  else if (containsPhrase(text, "ansioso") || containsPhrase(text, "ansiosa") || containsPhrase(text, "preocupado") || containsPhrase(text, "preocupada"))
+    copyText(reply, cap, "ELIZA: O que esta preocupando voce mais neste momento?");
+  else if (containsPhrase(text, "feliz") || containsPhrase(text, "contente") || containsPhrase(text, "alegre"))
+    copyText(reply, cap, "ELIZA: Que bom! O que aconteceu de bom?");
+  else if (containsPhrase(text, "nao sei") || containsPhrase(text, "nao tenho certeza"))
+    copyText(reply, cap, "ELIZA: Tudo bem ainda nao ter certeza. O que voce consegue perceber?");
+  else if (containsPhrase(text, "codigo") || containsPhrase(text, "programacao") || containsPhrase(text, "arduino") || containsPhrase(text, "esp32"))
+    copyText(reply, cap, "ELIZA: Qual problema de logica ou projeto para Arduino/ESP32 voce esta tentando resolver?");
+  else return false;
+  return true;
+}
 
-  if (text.startsWith("/tema ")) {
-    String newTheme = text.substring(6);
-    newTheme.trim();
-    if (newTheme == "geral" || newTheme == "padrao") {
-      brainFile = "/regras.txt";
-      lastTopic = "nada";
-      return String(F("SISTEMA: Retornando ao cerebro geral."));
+static void getResponse(const char *input, char *reply, size_t replyCap) {
+  char text[INPUT_CAP];
+  normalize(input, text, sizeof(text));
+  if (!*text) { copyText(reply, replyCap, "ELIZA: Escreva algo para iniciarmos."); return; }
+
+  if (strncmp(text, "/tema ", 6) == 0) {
+    const char *theme = text + 6;
+    if (!strcmp(theme, "geral") || !strcmp(theme, "padrao")) {
+      copyText(brainFile, sizeof(brainFile), "/regras.txt");
+      lastTopic[0] = '\0';
+      copyText(reply, replyCap, "SISTEMA: Retornando ao cerebro geral.");
+      return;
     }
-    String themePath = "/temas/" + newTheme + ".txt";
-    if (hasSD && SD.exists(themePath)) {
-      brainFile = themePath;
-      lastTopic = newTheme;
-      return String(F("SISTEMA: Modulo carregado! Tema: [")) + newTheme + "].";
+    char path[PATH_CAP];
+    size_t j = 0;
+    for (size_t i = 0; theme[i] && j + 12 < sizeof(path); ++i) {
+      char c = theme[i];
+      if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-') path[j++] = c;
     }
-    return String(F("SISTEMA: O arquivo '")) + themePath + "' nao existe no cartao SD.";
+    path[j] = '\0';
+    char fullPath[PATH_CAP];
+    snprintf(fullPath, sizeof(fullPath), "/temas/%s.txt", path);
+    if (hasSD && *path && SD.exists(fullPath)) {
+      copyText(brainFile, sizeof(brainFile), fullPath);
+      copyText(lastTopic, sizeof(lastTopic), path);
+      snprintf(reply, replyCap, "SISTEMA: Tema carregado: %s.", path);
+    } else snprintf(reply, replyCap, "SISTEMA: Tema nao encontrado: %s.", path);
+    return;
   }
+  if (!strcmp(text, "/ajuda") || !strcmp(text, "/help")) {
+    copyText(reply, replyCap, "ELIZA: /ajuda, /tema NOME, /tema geral, /memoria TERMO, /limpar."); return;
+  }
+  if (strncmp(text, "/memoria ", 9) == 0) { searchMemory(text + 9, reply, replyCap); return; }
+  if (strncmp(text, "lembra de ", 10) == 0) { searchMemory(text + 10, reply, replyCap); return; }
+  if (!strcmp(text, "/limpar")) {
+    clearRecentContext(); copyText(reply, replyCap, "ELIZA: Contexto recente apagado; arquivo de memoria mantido."); return;
+  }
+  if (setIntent(text, reply, replyCap)) return;
 
-  if (text == "/ajuda" || text == "/help") {
-    return String(F("ELIZA: Comandos: /ajuda, /tema NOME, /tema geral, /memoria TERMO e /limpar. Regras ficam em /regras.txt e /temas/."));
-  }
-  if (text.startsWith("/memoria ")) {
-    return buscarPensamentos(text.substring(9));
-  }
-  if (text.startsWith("lembra de ")) {
-    return buscarPensamentos(text.substring(10));
-  }
-  if (text == "/limpar") {
-    clearRecentContext();
-    return String(F("ELIZA: Contexto recente apagado. O arquivo de lembrancas no SD foi mantido."));
-  }
-
-  String intent = getIntentResponse(text);
-  if (intent.length() > 0) return String(F("ELIZA: ")) + intent;
-
-  // Carrega a melhor regra do arquivo: frase mais longa vence, evitando
-  // que uma regra generica esconda uma correspondencia mais especifica.
-  String bestResponses = "";
-  String bestKeyword = "";
-  int bestPosition = -1;
+  char line[LINE_CAP], key[KEY_CAP], bestKey[KEY_CAP] = "";
+  char bestReply[REPLY_CAP] = "";
   int bestScore = -1;
-
-  if (hasSD && SD.exists(brainFile)) {
-    File file = SD.open(brainFile, FILE_READ);
-    while (file && file.available()) {
+  int bestPosition = -1;
+  if (hasSD) {
+    File f = SD.open(brainFile, FILE_READ);
+    while (f && readLine(f, line, sizeof(line))) {
       yield();
-      String line = file.readStringUntil('\n');
-      line.trim();
-      if (line.length() == 0 || line.startsWith("#")) continue;
-
-      int firstPipe = line.indexOf('|');
-      if (firstPipe <= 0) continue;
-      String keyword = normalizeText(line.substring(0, firstPipe));
-      if (keyword.length() == 0 || !containsPhrase(text, keyword)) continue;
-
-      int score = keyword.length();
+      if (line[0] == '#' || !line[0]) continue;
+      char *separator = strchr(line, '|');
+      if (!separator) continue;
+      *separator = '\0';
+      normalize(line, key, sizeof(key));
+      if (!*key || !containsPhrase(text, key)) continue;
+      int score = (int)strlen(key);
       if (score > bestScore) {
         bestScore = score;
-        bestPosition = text.indexOf(keyword);
-        bestKeyword = keyword;
-        bestResponses = line.substring(firstPipe + 1);
+        bestPosition = (int)(strstr(text, key) - text);
+        copyText(bestKey, sizeof(bestKey), key);
+        pickReply(separator + 1, bestReply, sizeof(bestReply));
       }
     }
-    if (file) file.close();
+    if (f) f.close();
   }
 
-  // Regras internas continuam disponiveis mesmo se o SD existir mas nao
-  // possuir uma regra para a frase recebida.
   for (size_t i = 0; i < INTERNAL_RULE_COUNT; ++i) {
-    String keyword = normalizeText(internalRules[i].keyword);
-    if (!containsPhrase(text, keyword)) continue;
-    int score = keyword.length();
+    normalize(internalRules[i].key, key, sizeof(key));
+    if (!containsPhrase(text, key)) continue;
+    int score = (int)strlen(key);
     if (score > bestScore) {
       bestScore = score;
-      bestPosition = text.indexOf(keyword);
-      bestKeyword = keyword;
-      bestResponses = internalRules[i].response;
+      bestPosition = (int)(strstr(text, key) - text);
+      copyText(bestKey, sizeof(bestKey), key);
+      copyText(bestReply, sizeof(bestReply), internalRules[i].reply);
     }
   }
 
   if (bestScore >= 0) {
-    lastTopic = bestKeyword;
-    String answer = chooseResponse(bestResponses);
-    if (answer.indexOf('*') >= 0 && bestPosition >= 0) {
-      String remainder = text.substring(bestPosition + bestKeyword.length());
-      remainder.trim();
-      if (remainder.length() == 0) remainder = text;
-      answer.replace("*", reflect(remainder));
-    }
-    return String(F("ELIZA: ")) + answer;
+    copyText(lastTopic, sizeof(lastTopic), bestKey);
+    char *star = strchr(bestReply, '*');
+    if (star && bestPosition >= 0) {
+      char reflected[INPUT_CAP];
+      const char *remainder = text + bestPosition + bestScore;
+      while (*remainder == ' ') ++remainder;
+      if (!*remainder) remainder = text;
+      reflectText(remainder, reflected, sizeof(reflected));
+      char result[REPLY_CAP];
+      size_t prefixLen = (size_t)(star - bestReply);
+      if (prefixLen >= sizeof(result)) prefixLen = sizeof(result) - 1;
+      memcpy(result, bestReply, prefixLen);
+      result[prefixLen] = '\0';
+      snprintf(reply, replyCap, "ELIZA: %.*s%s%s", (int)prefixLen, bestReply,
+               reflected, star + 1);
+    } else snprintf(reply, replyCap, "ELIZA: %s", bestReply);
+    return;
   }
 
-  // Continuidade curta e contextual, sem copiar todo o historico para RAM.
-  if (containsPhrase(text, "e voce") || text == "por exemplo" ||
-      text == "mais" || text == "continuar" || text == "continua") {
-    if (previousUserText.length() > 0) {
-      return String(F("ELIZA: Sobre '")) + previousUserText + "', o que e mais importante para voce nisso?";
-    }
-  }
-
-  if (lastTopic != "nada") {
-    String followUps[] = {
-      "Como isso se relaciona com " + lastTopic + "?",
-      "O que mais voce gostaria de explorar sobre " + lastTopic + "?",
-      "Pode me dar um exemplo relacionado a " + lastTopic + "?"
-    };
-    return String(F("ELIZA: ")) + followUps[random(0, 3)];
-  }
-
-  const char* const fallbacks[] = {
-    "Pode me contar um pouco mais?",
-    "O que isso significa para voce?",
-    "Qual parte desse assunto e mais importante para voce?",
-    "Entendi. O que aconteceu em seguida?",
-    "Quer olhar para isso por outro angulo?"
-  };
-  return String(F("ELIZA: ")) + fallbacks[random(0, 5)];
+  if ((!strcmp(text, "mais") || !strcmp(text, "continuar") || containsPhrase(text, "e voce")) && *previousUserText) {
+    snprintf(reply, replyCap, "ELIZA: Sobre '%.70s', o que e mais importante para voce nisso?", previousUserText);
+  } else if (*lastTopic) {
+    snprintf(reply, replyCap, "ELIZA: O que mais voce gostaria de explorar sobre %.60s?", lastTopic);
+  } else copyText(reply, replyCap, "ELIZA: Pode me contar um pouco mais? O que isso significa para voce?");
 }
 
-// ---------------------------------------------------------
-// INICIALIZACAO
-// ---------------------------------------------------------
 void setup() {
   auto cfg = M5.config();
   M5Cardputer.begin(cfg, true);
@@ -397,70 +380,60 @@ void setup() {
   M5Cardputer.Display.setTextFont(&fonts::Font2);
   M5Cardputer.Display.setTextSize(1);
 
-  inputBuffer.reserve(128);
+  // 8-bit RGB332 sprite uses about half the RAM of the previous 16-bit sprite.
+  canvas.setColorDepth(8);
   canvas.createSprite(M5Cardputer.Display.width() - 4, M5Cardputer.Display.height() - 48);
   canvas.setTextScroll(true);
   canvas.setTextFont(&fonts::Font2);
   canvas.setTextSize(1);
 
   SPI2.begin(SD_SPI_SCK, SD_SPI_MISO, SD_SPI_MOSI, SD_SPI_CS);
-  if (SD.begin(SD_SPI_CS, SPI2)) {
-    hasSD = true;
+  hasSD = SD.begin(SD_SPI_CS, SPI2);
+  if (hasSD) {
     SD.mkdir("/pensamentos");
     SD.mkdir("/temas");
     canvas.setTextColor(COLOR_AI, COLOR_BG);
     canvas.println(F("Sistema inicializado."));
-    canvas.println(F("Regras locais e memoria online."));
+    canvas.println(F("Regras em streaming; buffers fixos."));
   } else {
-    hasSD = false;
     canvas.setTextColor(COLOR_SYS, COLOR_BG);
-    canvas.println(F("AVISO: Falha no cartao SD."));
-    canvas.println(F("Usando regras internas."));
+    canvas.println(F("AVISO: falha no cartao SD."));
+    canvas.println(F("Regras internas ativas."));
   }
-
   canvas.pushSprite(2, 22);
   drawHeader();
   drawInput();
 }
 
-// ---------------------------------------------------------
-// LOOP E TECLADO
-// ---------------------------------------------------------
 void loop() {
   M5Cardputer.update();
-  if (M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed()) {
-    Keyboard_Class::KeysState status = M5Cardputer.Keyboard.keysState();
-    for (auto key : status.word) {
-      if (inputBuffer.length() < 126) inputBuffer += key;
-    }
-
-    if (status.del && inputBuffer.length() > 2) {
-      inputBuffer.remove(inputBuffer.length() - 1);
-    }
-
-    if (status.enter) {
-      String userInput = inputBuffer.substring(2);
-      userInput.trim();
-      if (userInput.length() > 0) {
-        canvas.setTextColor(COLOR_USER, COLOR_BG);
-        canvas.print(F("\nVoce: "));
-        canvas.println(userInput);
-
-        String response = getElizaResponse(userInput);
-        String normalizedInput = normalizeText(userInput);
-        bool isCommand = normalizedInput.startsWith("/");
-        if (!isCommand) logPensamento(userInput, response);
-        else if (normalizedInput != "/limpar" && !normalizedInput.startsWith("/memoria ")) {
-          // Comandos de tema nao entram na memoria conversacional.
-        }
-
-        if (response.startsWith("SISTEMA:")) canvas.setTextColor(COLOR_SYS, COLOR_BG);
-        else canvas.setTextColor(COLOR_AI, COLOR_BG);
-        canvas.println(response);
-        canvas.pushSprite(2, 22);
-      }
-      inputBuffer = F("> ");
-    }
-    drawInput();
+  if (!(M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed())) return;
+  Keyboard_Class::KeysState status = M5Cardputer.Keyboard.keysState();
+  for (auto key : status.word) {
+    size_t n = strlen(inputBuffer);
+    if (n + 1 < sizeof(inputBuffer)) { inputBuffer[n] = key; inputBuffer[n + 1] = '\0'; }
   }
+  size_t inputLen = strlen(inputBuffer);
+  if (status.del && inputLen > 2) inputBuffer[inputLen - 1] = '\0';
+
+  if (status.enter) {
+    char userText[INPUT_CAP];
+    char reply[REPLY_CAP];
+    copyText(userText, sizeof(userText), inputBuffer + 2);
+    if (*userText) {
+      canvas.setTextColor(COLOR_USER, COLOR_BG);
+      canvas.print(F("\nVoce: "));
+      canvas.println(userText);
+      getResponse(userText, reply, sizeof(reply));
+      char normalized[INPUT_CAP];
+      normalize(userText, normalized, sizeof(normalized));
+      if (normalized[0] != '/') logConversation(userText, reply);
+      if (strncmp(reply, "SISTEMA:", 8) == 0) canvas.setTextColor(COLOR_SYS, COLOR_BG);
+      else canvas.setTextColor(COLOR_AI, COLOR_BG);
+      canvas.println(reply);
+      canvas.pushSprite(2, 22);
+    }
+    copyText(inputBuffer, sizeof(inputBuffer), "> ");
+  }
+  drawInput();
 }

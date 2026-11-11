@@ -1,38 +1,62 @@
-# 🧠 Eliza Neural OS — Assistente IA Autônomo para M5Stack Cardputer
+# Eliza Neural OS — assistente offline para M5Stack Cardputer
 
-O **Eliza Neural OS** é um sistema conversacional inteligente, leve e de código aberto projetado especificamente para rodar no **M5Stack Cardputer** (baseado no ESP32-S3). 
+Projeto de conversa local inspirado na ELIZA, feito para o M5Stack Cardputer com ESP32-S3. O firmware reconhece frases por regras, mantém o contexto imediato e pode consultar o histórico no cartão microSD. **Não executa um LLM**: a qualidade da conversa vem das regras e respostas preparadas em texto.
 
-Diferente de modelos de linguagem pesados que exigem nuvem ou GPUs potentes, este projeto resgata a clássica arquitetura de reconhecimento de padrões e inversão dinâmica inspirada no algoritmo **ELIZA**, turbinada com um sistema avançado de **Big Data no Edge** que lê e grava dados diretamente em um Cartão MicroSD.
+## O que foi otimizado
 
----
+- **Buffers de tamanho fixo:** o motor de conversa não usa `String` para transformar, comparar e concatenar mensagens. Isso evita alocações repetidas no heap e reduz o risco de fragmentação durante uso prolongado. A entrada é limitada a 127 bytes.
+- **Leitura em streaming:** `regras.txt`, arquivos de tema e histórico são lidos linha por linha em buffers limitados; o arquivo inteiro nunca é carregado na RAM. Linhas de regra acima do limite são descartadas com segurança.
+- **Seleção sem listas temporárias:** para cada regra coincidente, uma resposta é sorteada sem criar arrays dinâmicos de objetos `String`.
+- **Regras mais específicas primeiro:** entre as regras coincidentes, vence a frase de maior comprimento. Isso permite ter regras específicas e gerais no mesmo arquivo.
+- **Normalização UTF-8 para português:** acentos comuns são convertidos durante a cópia para um buffer ASCII, permitindo comparar `ação` e `acao` sem cadeias de `String.replace()`.
+- **Sprite de 8 bits:** a área de conversa usa RGB332, consumindo aproximadamente metade da RAM do sprite anterior de 16 bits. O tamanho real depende da resolução e da biblioteca M5GFX.
+- **Limites explícitos:** entrada 128 bytes, linha do arquivo 256 bytes, palavra-chave 80 bytes e resposta 192 bytes. Ajuste esses limites apenas se necessário.
+- **Dados extensíveis no SD:** adicione conteúdo e personas sem recompilar o firmware, respeitando o formato abaixo.
 
-## ✨ Principais Funcionalidades
+A otimização prioriza **RAM e estabilidade do heap**, não a redução do arquivo binário. Textos fixos e regras de fallback continuam no firmware/flash; regras grandes devem ficar no cartão SD. O cartão SD tem bastante capacidade, mas as linhas e respostas precisam caber nos limites definidos no código.
 
-- **💾 Armazenamento Externo Dinâmico (`/regras.txt`):** O "cérebro" da IA não ocupa a memória RAM do chip. As regras de conversação ficam em arquivos de texto no cartão SD, permitindo bases de conhecimento gigantescas.
-- **🔄 Inversão Dinâmica de Pronomes:** A IA transforma a perspectiva da frase do usuário em tempo real (ex: de *"eu estou"* para *"você está"*), gerando interações muito mais naturais.
-- **📂 Sistema de Pensamentos Autônomo (`/pensamentos/log.txt`):** O Cardputer registra automaticamente o histórico de conversas em segundo plano. Você pode consultar memórias antigas usando comandos como *"lembra de [assunto]"*.
-- **⚡ Big Data em Microcontroladores:** Motor de busca reversa em blocos de 1KB (`Chunking`) otimizado para vasculhar gigabytes de texto em milissegundos sem causar estouro de pilha (*Kernel Panic*).
-- **🔀 Multi-Cérebros (Personas Dinâmicas):** Troque o foco do assistente em tempo real usando comandos de terminal (`/tema rpg`, `/tema tech`, etc.), carregando arquivos específicos da pasta `/temas/`.
-- **🎨 Interface Cyberpunk Otimizada:** Visual de terminal customizado com paleta de cores moderna, fontes limpas embutidas na Flash (sem desperdício de RAM) e cabeçalho com status do Cartão SD.
-- **🚀 Compatível com M5Launcher:** Desenvolvido para inicializar perfeitamente e coexistir de forma limpa com gerenciadores de boot como o M5Launcher.
+## Hardware e compilação
 
----
+- M5Stack Cardputer baseado em ESP32-S3.
+- Cartão microSD FAT32 para regras, temas e histórico persistente.
+- Arduino IDE ou PlatformIO com as bibliotecas M5Cardputer/M5GFX compatíveis.
 
-## 🛠️ Requisitos de Hardware
+Compile e grave `eliza.ino` como um sketch Arduino. O arquivo `eliza.ino.bin` existente no repositório é um binário pré-compilado e **não é regenerado automaticamente** quando o código-fonte muda; recompile-o para obter firmware com as alterações.
 
-- **Dispositivo:** M5Stack Cardputer (ESP32-S3)
-- **Armazenamento:** Cartão MicroSD formatado em **FAT32** (inserido no slot integrado do Cardputer).
-
----
-
-## 📂 Estrutura de Pastas e Arquivos no Cartão SD
-
-Para que todas as funcionalidades operem corretamente, prepare o seu cartão MicroSD com a seguinte estrutura na raiz:
+## Arquivos no cartão SD
 
 ```text
-📁 (Raiz do Cartão SD)
- ├── 📄 regras.txt           # Cérebro de conversação padrão (obrigatório)
- ├── 📁 pensamentos/         # Criado automaticamente pelo sistema (armazena o log.txt)
- └── 📁 temas/               # Pasta opcional para múltiplos cérebros
-      ├── 📄 tech.txt        # Exemplo: regras focadas em tecnologia/programação
-      └── 📄 rpg.txt         # Exemplo: regras focadas em jogos de texto
+/
+├── regras.txt
+├── pensamentos/       (criada pelo firmware; contém log.txt)
+└── temas/
+    ├── tech.txt
+    └── rpg.txt
+```
+
+As regras usam o formato `frase-chave|resposta 1|resposta 2`. Uma resposta pode usar `*` para inserir o trecho da entrada após a palavra-chave:
+
+```text
+# Comentarios comecam com #
+estou triste|Sinto muito. O que aconteceu?|Quer me contar mais sobre isso?
+eu gosto de|O que voce gosta em *?|Quando voce percebeu que gosta de *?
+programacao|Qual projeto voce esta criando?|Que parte da programacao voce quer explorar?
+```
+
+Use frases distintas e específicas. O motor escolhe a correspondência de maior comprimento; pontuação e acentos são normalizados antes da comparação. Cada linha deve ter menos de 255 bytes. As respostas podem ser separadas por `|`; limite-as a cinco opções para compatibilidade com ferramentas de edição, embora o firmware sorteie entre todas as opções da linha que caibam no buffer de leitura.
+
+## Comandos
+
+- `/ajuda` — mostra comandos disponíveis.
+- `/tema tech` — carrega `/temas/tech.txt` (somente letras, números, `_` e `-` no nome).
+- `/tema geral` — retorna a `/regras.txt`.
+- `/memoria termo` ou `lembra de termo` — procura a ocorrência mais recente nas falas do usuário no histórico do SD.
+- `/limpar` — apaga o contexto imediato em RAM, sem apagar o arquivo de histórico.
+
+Sem cartão SD, o assistente continua com as regras internas, mas não consegue carregar temas nem consultar/gravar histórico persistente.
+
+## Limites e próximos passos
+
+Este é um mecanismo simbólico embarcado, não uma rede neural generativa. Aumentar a lista de regras melhora a cobertura, não a capacidade de raciocínio geral. Escreva várias respostas naturais para cada intenção e teste sobreposições entre frases-chave.
+
+A busca de memória é streaming e usa pouca RAM, mas percorre o log inteiro; o tempo cresce conforme o histórico aumenta. Se esse custo se tornar perceptível, uma próxima evolução seria rotacionar o log ou criar um índice compacto no SD. Não há alegação de economia medida de flash ou benchmark de velocidade: esses valores dependem da versão do core Arduino, M5GFX, configuração de compilação e cartão.
