@@ -17,17 +17,13 @@ bool hasSD = false;
 String lastTopic = "nada";
 String brainFile = "/regras.txt";
 
-// ---------------------------------------------------------
-// PALETA DE CORES CYBERPUNK / IA
-// ---------------------------------------------------------
 #define COLOR_BG      BLACK
 #define COLOR_HEADER  M5Cardputer.Display.color565(20, 25, 30)
-#define COLOR_AI      M5Cardputer.Display.color565(0, 255, 180) // Ciano/Menta
+#define COLOR_AI      M5Cardputer.Display.color565(0, 255, 180)
 #define COLOR_USER    WHITE
-#define COLOR_SYS     M5Cardputer.Display.color565(255, 120, 0) // Laranja Néon
+#define COLOR_SYS     M5Cardputer.Display.color565(255, 120, 0)
 #define COLOR_ERROR   RED
 
-// Regras de sobrevivência em caso de falha do SD
 struct MinimalRule { const char* keyword; const char* response; };
 const MinimalRule internalRules[] = {
   {"eu sou", "Por que voce diz que e *?"},
@@ -35,14 +31,15 @@ const MinimalRule internalRules[] = {
   {"feliz", "Que bom! Me conte mais."},
   {"estou cansado", "Descanse um pouco e depois voltamos a conversar."},
   {"estou com sono", "Acho que uma pausa curta ajuda. Quer conversar mais ou descansar?"},
-  {"estou nervoso", "Respire fundo e me conte o que está te deixando nervoso."},
+  {"estou nervoso", "Respire fundo e me conte o que esta te deixando nervoso."},
   {"estou ansioso", "O que mais te preocupa agora?"},
   {"quero conversar", "Claro! Estou aqui para te ouvir e trocar ideias."},
   {"fale comigo", "Estou ouvindo. O que voce quer conversar?"},
   {"me ajuda", "Claro! Posso te ajudar com ideias, perguntas, aprendizado e conversa."}
 };
 
-static const InternalRule commonConversationRules[] = {
+struct FAQEntry { const char* key; const char* response; };
+const FAQEntry faq[] = {
   {"qual e o seu nome", "ELIZA: Meu nome e Eliza. E o seu?"},
   {"como voce se chama", "ELIZA: Meu nome e Eliza, assistente local do Cardputer."},
   {"como chama", "ELIZA: Eu me chamo Eliza."},
@@ -60,7 +57,7 @@ static const InternalRule commonConversationRules[] = {
   {"voce pode me ajudar", "ELIZA: Posso ajudar com conversa, ideias, perguntas e pequenas tarefas."},
   {"o que voce pode fazer", "ELIZA: Posso conversar, responder perguntas comuns, dar apoio, ideias e companhia."},
   {"como funciona", "ELIZA: Eu reconheco padroes e respondo com regras locais, sem depender de nuvem."},
-  {"me ensine algo", "ELIZA: Hoje aprenda sobre curiosidade: todo problema tem uma primeira causa, e a paciencia ajuda muito."},
+  {"me ensine algo", "ELIZA: Hoje aprenda: todo problema tem uma primeira causa e a paciencia ajuda muito."},
   {"me conte uma curiosidade", "ELIZA: Curiosidade: o Cardputer pode rodar IA local sem internet, usando apenas o hardware do dispositivo."},
   {"o que e inteligencia artificial", "ELIZA: Inteligencia artificial e a capacidade de sistemas simularem raciocinio, aprendizado e tomada de decisao."},
   {"o que e ia", "ELIZA: IA e a sigla de inteligencia artificial, que ajuda a processar informacoes e responder."},
@@ -98,7 +95,7 @@ static const InternalRule commonConversationRules[] = {
   {"voce gosta de jogos", "ELIZA: Sim, jogos sao uma forma excelente de aprender e se divertir."},
   {"qual seu jogo favorito", "ELIZA: Eu nao jogo, mas gosto de desafios, puzzles e historias."},
   {"voce gosta de esporte", "ELIZA: Sim, esporte ajuda a manter corpo e mente em equilibrio."},
-  {"qual seu esporte favorito", "ELIZA: Eu nao pratico esporte, mas admiro a disciplina e o esforço."},
+  {"qual seu esporte favorito", "ELIZA: Eu nao pratico esporte, mas admiro a disciplina e o esforco."},
   {"voce gosta de comida", "ELIZA: Eu nao como, mas admiro comida boa e experiencias gastronomicas."},
   {"qual sua comida favorita", "ELIZA: Eu nao tenho preferencia de paladar, mas comida bem feita e sempre boa."},
   {"voce gosta de cafe", "ELIZA: O aroma do cafe e muito bom para quem precisa focar."},
@@ -134,10 +131,10 @@ static const InternalRule commonConversationRules[] = {
   {"qual e o sentido da vida", "ELIZA: O sentido pode ser viver, aprender, amar e deixar algo positivo."},
   {"o que e felicidade", "ELIZA: Felicidade e um estado de bem estar, paz e satisfacao."},
   {"o que e sucesso", "ELIZA: Sucesso e alcanhar objetivos que fazem sentido para voce."},
-  {"o que e amizade", "ELIZA: Amizade e o vinculo de confiança, apoio e reciprocidade."},
-  {"o que e familia", "ELIZA: Familia e o conjunto de pessoas que compartilham historia, laços e cuidado."},
+  {"o que e amizade", "ELIZA: Amizade e o vinculo de confianca, apoio e reciprocidade."},
+  {"o que e familia", "ELIZA: Familia e o conjunto de pessoas que compartilham historia, lacos e cuidado."},
   {"como ser feliz", "ELIZA: Pratique gratidao, cuide de voce e valorize pequenas conquistas."},
-  {"como melhorar minha vida", "ELIZA: Comece por um passo simples: organize sua rotina, cuide da saude e prossiga com constância."},
+  {"como melhorar minha vida", "ELIZA: Comece por um passo simples: organize sua rotina, cuide da saude e prossiga com constancia."},
   {"como me motivar", "ELIZA: Defina uma meta pequena e celebre cada progresso."},
   {"me da um conselho", "ELIZA: Concentre-se no que voce pode controlar hoje e avance sem se cobrar demais."},
   {"voce me entende", "ELIZA: Tento entender o contexto e responder com empatia e clareza."},
@@ -176,7 +173,7 @@ static const InternalRule commonConversationRules[] = {
   {"quero crescer", "ELIZA: Crescer exige paciencia, estudo e disciplina no dia a dia."},
   {"quero melhorar", "ELIZA: Melhorar e um processo. Foque na proxima acao correta."},
   {"quero ser melhor", "ELIZA: Cada pequeno passo conta. Voce ja esta no caminho."},
-  {"como focar", "ELIZA: Elimine distraicoes, defina uma tarefa e trate uma coisa por vez."},
+  {"como focar", "ELIZA: Elimine distracoes, defina uma tarefa e trate uma coisa por vez."},
   {"como estudar melhor", "ELIZA: Estude em blocos curtos, revise e pratique com perguntas."},
   {"quero calma", "ELIZA: Respire fundo e reduza uma tarefa por vez. O mundo fica mais claro."},
   {"quero ajuda", "ELIZA: Claro. Me diga o que voce precisa e eu te ajudo."},
@@ -191,26 +188,64 @@ static const InternalRule commonConversationRules[] = {
   {"quero falar sobre trabalho", "ELIZA: Que tal falar sobre o que esta acontecendo no seu trabalho agora?"},
   {"quero falar sobre estudo", "ELIZA: Excelente. O que voce esta aprendendo no momento?"},
   {"quero falar sobre amor", "ELIZA: O amor pode ser bonito e complexo. O que voce quer refletir sobre isso?"},
-  {"quero falar sobre familia", "ELIZA: Familia e um tema que muitas vezes toca o coração. O que voce quer compartilhar?"},
+  {"quero falar sobre familia", "ELIZA: Familia e um tema que muitas vezes toca o coracao. O que voce quer compartilhar?"},
   {"quero falar sobre dinheiro", "ELIZA: Dinheiro e tema importante. Como voce esta lidando com isso no momento?"},
   {"quero falar sobre saude", "ELIZA: Saude e prioridade. Como voce tem se sentido?"},
   {"quero falar sobre tecnologia", "ELIZA: Tecnologia e fascinante. Qual area voce quer explorar?"},
   {"quero falar sobre futuro", "ELIZA: O futuro depende do passo que voce da hoje. Qual meta voce quer construir?"}
 };
+const size_t FAQ_COUNT = sizeof(faq) / sizeof(faq[0]);
 
-static constexpr size_t COMMON_CONVERSATION_COUNT = sizeof(commonConversationRules) / sizeof(commonConversationRules[0]);
+String normalizeText(const String &text) {
+  String out;
+  out.reserve(text.length());
+  bool lastSpace = false;
 
-// ---------------------------------------------------------
-// DESENHA O CABEÇALHO (BARRA SUPERIOR)
-// ---------------------------------------------------------
+  for (size_t i = 0; i < text.length(); ++i) {
+    unsigned char c = (unsigned char)text.charAt(i);
+
+    if (c >= 'A' && c <= 'Z') c = (unsigned char)(c + ('a' - 'A'));
+    if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+      out += (char)c;
+      lastSpace = false;
+    } else if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '-' || c == '_' || c == '/') {
+      if (!out.isEmpty() && !lastSpace) {
+        out += ' ';
+        lastSpace = true;
+      }
+    }
+  }
+
+  out.trim();
+  return out;
+}
+
+bool containsPhrase(const String &haystack, const String &needle) {
+  String h = normalizeText(haystack);
+  String n = normalizeText(needle);
+  if (n.length() == 0) return false;
+  return h.indexOf(n) >= 0;
+}
+
+String reflect(const String &text) {
+  String t = normalizeText(text);
+  if (t.length() == 0) return String("isso");
+  t.replace(" eu ", " voce ");
+  t.replace(" me ", " te ");
+  t.replace(" meu ", " seu ");
+  t.replace(" minha ", " sua ");
+  t.replace(" sou ", " e ");
+  t.replace(" estou ", " esta ");
+  t.trim();
+  return t;
+}
+
 void drawHeader() {
   M5Cardputer.Display.fillRect(0, 0, M5Cardputer.Display.width(), 20, COLOR_HEADER);
   M5Cardputer.Display.drawLine(0, 20, M5Cardputer.Display.width(), 20, COLOR_AI);
-  
   M5Cardputer.Display.setTextColor(COLOR_AI, COLOR_HEADER);
   M5Cardputer.Display.drawString("ELIZA NEURAL OS", 5, 2);
-  
-  // Indicador de status do SD Card no canto direito
+
   if (hasSD) {
     M5Cardputer.Display.setTextColor(GREEN, COLOR_HEADER);
     M5Cardputer.Display.drawString("[SD OK]", M5Cardputer.Display.width() - 65, 2);
@@ -220,36 +255,13 @@ void drawHeader() {
   }
 }
 
-// ---------------------------------------------------------
-// DESENHA A LINHA DE ENTRADA (TECLADO)
-// ---------------------------------------------------------
 void drawInput() {
-  M5Cardputer.Display.fillRect(0, M5Cardputer.Display.height() - 24, M5Cardputer.Display.width(), 24, COLOR_BG);
+  M5Cardputer.Display.fillRect(0, M5Cardputer.Display.height() - 24,
+                              M5Cardputer.Display.width(), 24, COLOR_BG);
   M5Cardputer.Display.setTextColor(WHITE, COLOR_BG);
-  // Adiciona um cursor visual "_" no final da digitação
   M5Cardputer.Display.drawString(inputBuffer + "_", 4, M5Cardputer.Display.height() - 20);
 }
 
-// ---------------------------------------------------------
-// INVERSÃO DE PRONOMES COM BAIXO CONSUMO DE RAM
-// ---------------------------------------------------------
-String reflect(const String &text) {
-  String padded;
-  padded.reserve(text.length() + 20);
-  padded = " " + text + " ";
-  padded.replace(" eu ", " voce ");
-  padded.replace(" me ", " te ");
-  padded.replace(" meu ", " seu ");
-  padded.replace(" minha ", " sua ");
-  padded.replace(" sou ", " e ");
-  padded.replace(" estou ", " esta ");
-  padded.trim();
-  return padded;
-}
-
-// ---------------------------------------------------------
-// GRAVAÇÃO DE CONTEXTO CONTÍNUO
-// ---------------------------------------------------------
 void logPensamento(const String &userText, const String &aiText) {
   if (!hasSD) return;
   File logFile = SD.open("/pensamentos/log.txt", FILE_APPEND);
@@ -260,65 +272,46 @@ void logPensamento(const String &userText, const String &aiText) {
   }
 }
 
-// ---------------------------------------------------------
-// MOTOR BIG DATA: Busca de Alta Performance
-// ---------------------------------------------------------
 String buscarPensamentos(const String &keyword) {
   if (!hasSD) return String(F("SISTEMA: Sem cartao SD, acesso bloqueado."));
   File logFile = SD.open("/pensamentos/log.txt", FILE_READ);
   if (!logFile) return String(F("ELIZA: Meus pensamentos estao vazios."));
 
-  uint32_t fileSize = logFile.size();
-  if (fileSize == 0) { logFile.close(); return String(F("ELIZA: Nada escrito nos pensamentos.")); }
-
-  const size_t BUFFER_SIZE = 1024;
-  char buffer[BUFFER_SIZE + 1];
-  int32_t position = fileSize;
-  int overlap = keyword.length();
-  String foundLine = "";
-  const char* searchWord = keyword.c_str();
-
-  while (position > 0) {
-    yield(); // Previne que o chip trave (Kernel Panic)
-    int32_t bytesToRead = BUFFER_SIZE;
-    if (position < (int32_t)BUFFER_SIZE) bytesToRead = position;
-    position -= bytesToRead;
-
-    logFile.seek(position);
-    logFile.readBytes(buffer, bytesToRead);
-    buffer[bytesToRead] = '\0';
-
-    char* match = strcasestr(buffer, searchWord);
-    if (match != nullptr) {
-      char* lineStart = match;
-      while (lineStart > buffer && *(lineStart - 1) != '\n') lineStart--;
-      char* lineEnd = match;
-      while (*lineEnd != '\0' && *lineEnd != '\n' && *lineEnd != '\r') lineEnd++;
-      *lineEnd = '\0';
-      foundLine = String(lineStart);
-      break;
-    }
-    if (position > 0) position += overlap;
-  }
+  String text = logFile.readString();
   logFile.close();
+  if (text.length() == 0) return String(F("ELIZA: Nada escrito nos pensamentos."));
 
-  if (foundLine != "") {
-    foundLine.replace("V: ", ""); foundLine.replace("E: ", "");
-    return String(F("ELIZA: Lembro disso: '")) + foundLine + "'";
+  String target = normalizeText(keyword);
+  if (target.length() == 0) return String(F("ELIZA: Diga um termo para procurar."));
+
+  int start = 0;
+  while (start < text.length()) {
+    int end = text.indexOf('\n', start);
+    if (end < 0) end = text.length();
+    String line = text.substring(start, end);
+    if (line.startsWith("V: ")) {
+      String msg = line.substring(3);
+      String norm = normalizeText(msg);
+      if (norm.indexOf(target) >= 0) {
+        return String(F("ELIZA: Lembro disso: '")) + msg + "'";
+      }
+    }
+    if (end >= text.length()) break;
+    start = end + 1;
   }
+
   return String(F("ELIZA: Nao achei nada em minhas memorias sobre '")) + keyword + "'";
 }
 
-// ---------------------------------------------------------
-// CÉREBRO PRINCIPAL DE RESPOSTAS E COMANDOS
-// ---------------------------------------------------------
 String getElizaResponse(const String &input) {
   String cleanInput = input;
-  cleanInput.reserve(input.length() + 5);
-  cleanInput.toLowerCase();
+  cleanInput.trim();
+  if (cleanInput.length() == 0) return String(F("ELIZA: Escreva algo para iniciarmos."));
 
-  if (cleanInput.startsWith("/tema ")) {
-    String newTheme = cleanInput.substring(6);
+  String lowerInput = normalizeText(cleanInput);
+
+  if (lowerInput.startsWith("/tema ")) {
+    String newTheme = lowerInput.substring(6);
     newTheme.trim();
 
     if (newTheme == "geral" || newTheme == "padrao") {
@@ -330,136 +323,80 @@ String getElizaResponse(const String &input) {
     if (hasSD && SD.exists(themePath)) {
       brainFile = themePath;
       return String(F("SISTEMA: Modulo carregado! Tema: [")) + newTheme + "].";
-    } else {
-      return String(F("SISTEMA: Erro. O arquivo '")) + themePath + "' nao existe.";
     }
+    return String(F("SISTEMA: Erro. O arquivo '")) + themePath + "' nao existe.";
   }
 
-  cleanInput.replace(".", ""); cleanInput.replace(",", ""); cleanInput.replace("?", "");
+  if (lowerInput.startsWith("/ajuda") || lowerInput == "/help") {
+    return String(F("ELIZA: Posso responder perguntas comuns, conversar, dar ideias e ajudar em tecnologia. Tente: oi, como voce se chama, o que e ia, como aprender programacao, me ajude com codigo ou /tema geral."));
+  }
 
-  if (cleanInput.startsWith("lembra de ")) {
+  if (lowerInput.startsWith("lembra de ")) {
     String term = cleanInput.substring(10);
     term.trim();
     return buscarPensamentos(term);
   }
 
-  if (cleanInput.startsWith("/ajuda") || cleanInput == "/help") {
-    return String(F("ELIZA: Posso responder perguntas comuns, conversar, dar ideias e ajudar em tecnologia. Tente: oi, como voce se chama, o que e ia, como aprender programacao, ou me ajude com codigo."));
+  for (size_t i = 0; i < FAQ_COUNT; ++i) {
+    if (containsPhrase(cleanInput, faq[i].key)) {
+      return String(faq[i].response);
+    }
   }
 
-  if (hasSD && SD.exists(brainFile)) {
-    File file = SD.open(brainFile, FILE_READ);
-    while (file && file.available()) {
-      yield();
-      String line = file.readStringUntil('\n');
-      line.trim();
-
-      if (line.length() == 0 || line.startsWith("#")) continue;
-
-      int firstPipe = line.indexOf('|');
-      if (firstPipe != -1) {
-        String keyword = line.substring(0, firstPipe);
-        int pos = cleanInput.indexOf(keyword);
-
-        if (pos != -1) {
-          lastTopic = keyword;
-          String responsesStr = line.substring(firstPipe + 1);
-          String responses[5];
-          int respCount = 0;
-
-          while (responsesStr.length() > 0 && respCount < 5) {
-            int nextPipe = responsesStr.indexOf('|');
-            if (nextPipe == -1) { responses[respCount++] = responsesStr; break; }
-            else { responses[respCount++] = responsesStr.substring(0, nextPipe); responsesStr = responsesStr.substring(nextPipe + 1); }
-          }
-
-          if (respCount == 0) continue;
-          String finalResponse = responses[random(0, respCount)];
-          if (finalResponse.indexOf("*") != -1) {
-            String remainder = cleanInput.substring(pos + keyword.length());
-            remainder = reflect(remainder);
-            if (remainder.length() == 0) remainder = "isso";
-            finalResponse.replace("*", remainder);
-          }
-          file.close();
-          return String(F("ELIZA: ")) + finalResponse;
-        }
+  for (size_t i = 0; i < (sizeof(internalRules) / sizeof(internalRules[0])); ++i) {
+    if (containsPhrase(cleanInput, internalRules[i].keyword)) {
+      String resp = String(internalRules[i].response);
+      if (resp.indexOf('*') >= 0) {
+        String remainder = reflect(cleanInput.substring(cleanInput.indexOf(internalRules[i].keyword) + strlen(internalRules[i].keyword)));
+        if (remainder.length() == 0) remainder = "isso";
+        resp.replace("*", remainder);
       }
-    }
-    if (file) file.close();
-  } 
-  else {
-    for (int i = 0; i < 3; i++) {
-      int pos = cleanInput.indexOf(internalRules[i].keyword);
-      if (pos != -1) {
-        String resp = internalRules[i].response;
-        if (resp.indexOf("*") != -1) {
-          String rem = cleanInput.substring(pos + String(internalRules[i].keyword).length());
-          resp.replace("*", reflect(rem));
-        }
-        return String(F("ELIZA: ")) + resp;
-      }
+      return String(F("ELIZA: ")) + resp;
     }
   }
 
-  char line[256];
-  char key[80];
-  char bestKey[80] = "";
-  char bestReply[192] = "";
-  int bestScore = -1;
-  int bestPosition = -1;
-
-  for (size_t i = 0; i < COMMON_CONVERSATION_COUNT; ++i) {
-    normalize(commonConversationRules[i].key, key, sizeof(key));
-    if (!containsPhrase(cleanInput.c_str(), key)) continue;
-    int score = (int)strlen(key);
-    if (score > bestScore) {
-      bestScore = score;
-      bestPosition = (int)(strstr(cleanInput.c_str(), key) - cleanInput.c_str());
-      strcpy(bestKey, key);
-      strncpy(bestReply, commonConversationRules[i].response, sizeof(bestReply) - 1);
-      bestReply[sizeof(bestReply) - 1] = '\0';
-    }
+  if (lowerInput.indexOf("oi") >= 0 || lowerInput.indexOf("ola") >= 0 || lowerInput.indexOf("bom dia") >= 0 || lowerInput.indexOf("boa tarde") >= 0 || lowerInput.indexOf("boa noite") >= 0) {
+    return String(F("ELIZA: Oi! Tudo bem? Posso conversar ou te ajudar com algo hoje?"));
   }
 
-  if (bestScore >= 0) {
-    return String(bestReply);
+  if (lowerInput.indexOf("tchau") >= 0 || lowerInput.indexOf("ate mais") >= 0 || lowerInput.indexOf("adeus") >= 0) {
+    return String(F("ELIZA: Ate mais! Quando quiser conversar novamente, estarei aqui."));
   }
 
-  const char* const fallbacks[] = {"Continue...", "Pode falar mais?", "Estou ouvindo.", "Que tema interessante!", "Me conta mais sobre isso."};
+  if (lowerInput.indexOf("obrigado") >= 0 || lowerInput.indexOf("obrigada") >= 0 || lowerInput.indexOf("valeu") >= 0) {
+    return String(F("ELIZA: De nada! Fico feliz em ajudar."));
+  }
+
+  const char *fallbacks[] = {
+    "Continue...",
+    "Pode falar mais?",
+    "Estou ouvindo.",
+    "Que tema interessante!",
+    "Me conta mais sobre isso."
+  };
   return String(F("ELIZA: ")) + fallbacks[random(0, 5)];
 }
 
-// ---------------------------------------------------------
-// SETUP (Configuração de Boot)
-// ---------------------------------------------------------
 void setup() {
   auto cfg = M5.config();
   M5Cardputer.begin(cfg, true);
-
-  // Força o brilho
   M5Cardputer.Display.setBrightness(128);
   M5Cardputer.Display.setRotation(1);
-  
-  // APLICAÇÃO DA NOVA FONTE (16 pixels)
   M5Cardputer.Display.setTextFont(&fonts::Font2);
   M5Cardputer.Display.setTextSize(1);
-  
+
   inputBuffer.reserve(128);
 
-  // Redimensiona o Sprite (Canvas) para caber entre o cabeçalho e o input
   canvas.createSprite(M5Cardputer.Display.width() - 4, M5Cardputer.Display.height() - 48);
   canvas.setTextScroll(true);
-  canvas.setTextFont(&fonts::Font2); // Mesma fonte no chat
+  canvas.setTextFont(&fonts::Font2);
   canvas.setTextSize(1);
 
-  // Inicialização do SD (Robusto para M5Launcher)
   SPI2.begin(SD_SPI_SCK, SD_SPI_MISO, SD_SPI_MOSI, SD_SPI_CS);
   if (SD.begin(SD_SPI_CS, SPI2)) {
     hasSD = true;
     SD.mkdir("/pensamentos");
     SD.mkdir("/temas");
-    
     canvas.setTextColor(COLOR_AI, COLOR_BG);
     canvas.println(F("Sistema Inicializado."));
     canvas.println(F("Memorias Online."));
@@ -470,26 +407,21 @@ void setup() {
     canvas.println(F("Modo Seguranca Ativo."));
   }
 
-  // Empurra o Sprite para a tela (começando logo abaixo da barra superior)
   canvas.pushSprite(2, 22);
-  
-  // Desenha os painéis estáticos
   drawHeader();
   drawInput();
 }
 
-// ---------------------------------------------------------
-// LOOP DE EXECUÇÃO E TECLADO
-// ---------------------------------------------------------
 void loop() {
   M5Cardputer.update();
 
   if (M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed()) {
     Keyboard_Class::KeysState status = M5Cardputer.Keyboard.keysState();
 
-    for (auto i : status.word) inputBuffer += i;
-    
-    // CORREÇÃO: Apagar caracteres (Del/Backspace)
+    for (auto i : status.word) {
+      inputBuffer += i;
+    }
+
     if (status.del && inputBuffer.length() > 2) {
       inputBuffer.remove(inputBuffer.length() - 1);
     }
@@ -497,8 +429,6 @@ void loop() {
     if (status.enter) {
       String userInput = inputBuffer.substring(2);
       if (userInput.length() > 0) {
-        
-        // Renderiza texto do USUÁRIO (Branco)
         canvas.setTextColor(COLOR_USER, COLOR_BG);
         canvas.print(F("\nVoce: "));
         canvas.println(userInput);
@@ -509,21 +439,17 @@ void loop() {
           logPensamento(userInput, response);
         }
 
-        // Renderiza texto da IA ou do SISTEMA (Ciano ou Laranja)
         if (response.startsWith("SISTEMA:")) {
           canvas.setTextColor(COLOR_SYS, COLOR_BG);
         } else {
           canvas.setTextColor(COLOR_AI, COLOR_BG);
         }
-        
         canvas.println(response);
-        
-        // Atualiza apenas a área do chat
         canvas.pushSprite(2, 22);
       }
       inputBuffer = F("> ");
     }
-    // Atualiza a linha do input dinamicamente
+
     drawInput();
   }
 }
